@@ -91,8 +91,8 @@ journalctl -u doorcontrol -f     # logs
 ```
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m doorcontrol --data data serve --port 8080   (first start asks for the admin account)
+.venv/bin/python -m doorcontrol --data data serve --port 8080
 .venv/bin/python -m pytest
 ```
 
-Tests use a fake 2N on localhost, no real devices are touched.
+The first start asks for the admin account. Tests use a fake 2N on localhost, no real devices are touched.
