@@ -284,6 +284,7 @@ def create_app(data_dir=None, trust_proxy=None, secure_cookies=None):
             "logo": f"/logo.png?v={s['logo_version']}" if branding.has_logo(data_dir) else "",
             "icon_version": s["logo_version"],
             "version": __version__,
+            "needs_setup": needs_setup(),
         }
 
     @app.get("/api/branding")
@@ -313,6 +314,38 @@ def create_app(data_dir=None, trust_proxy=None, secure_cookies=None):
         session.permanent = bool(data.get("remember", True))
         db.run("UPDATE users SET last_login = datetime('now') WHERE id = ?", (u["id"],))
         write_log("login", user=u)
+        return jsonify(ok=True)
+
+    setup_lock = threading.Lock()
+
+    def needs_setup():
+        return not db.one("SELECT 1 FROM users")
+
+    @app.post("/api/setup")
+    def first_setup():
+        """First run only: make the admin account. Refused as soon as any user exists."""
+        data = request.get_json(silent=True) or {}
+        with setup_lock:
+            if not needs_setup():
+                return jsonify(error="setup is already done"), 403
+            username = text(data, "username", 64, required=True)
+            if not re.match(r"^[A-Za-z0-9._@-]+$", username):
+                raise Fail("username: only letters, numbers and . _ @ -")
+            pw = check_new_password(data.get("password"))
+            app_name = text(data, "app_name", 40)
+            role = db.one("SELECT id FROM roles WHERE is_admin = 1 ORDER BY id LIMIT 1")
+            uid = db.run("INSERT INTO users(username, name, password_hash, role_id) VALUES (?,?,?,?)",
+                         (username, text(data, "name", 80), generate_password_hash(pw), role["id"]))
+        if app_name:
+            db.set_setting("app_name", app_name)
+        if data.get("language") in ("en", "nl"):
+            db.set_setting("language", data["language"])
+        u = db.one("SELECT * FROM users WHERE id = ?", (uid,))
+        session.clear()
+        session["uid"] = uid
+        session["tok"] = u["token"]
+        session.permanent = True
+        write_log("admin created at first run", username, user=u)
         return jsonify(ok=True)
 
     @app.post("/api/logout")

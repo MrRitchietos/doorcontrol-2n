@@ -221,6 +221,7 @@ document.addEventListener('visibilitychange', () => {
 
 function render() {
   closeSheet();
+  if (!S.me && S.brand && S.brand.needs_setup) return renderSetup();
   if (!S.me) return renderLogin();
   if (S.view === 'settings') return renderSettings();
   return renderHome();
@@ -267,6 +268,70 @@ function renderLogin() {
         err.textContent = ex.message;
         err.hidden = false;
         $('input[name=password]', form).select();
+      }
+    });
+  });
+}
+
+// ---------- first run ----------
+
+function renderSetup() {
+  const b = S.brand || {};
+  $('#app').innerHTML = `
+    <main class="login">
+      <div class="login-card">
+        <div class="login-brand">
+          ${brandHead('big')}
+          <h1>${t('setup_title')}</h1>
+          <p class="muted">${t('setup_help')}</p>
+        </div>
+        <form id="setup-form" autocomplete="off">
+          ${field(t('language'), `<select name="language"><option value="en" ${b.language === 'en' ? 'selected' : ''}>English</option><option value="nl" ${b.language === 'nl' ? 'selected' : ''}>Nederlands</option></select>`)}
+          ${field(t('app_name'), `<input name="app_name" value="${esc(b.app_name || '')}" maxlength="40" placeholder="Door Control">`, t('setup_name_hint'))}
+          ${field(t('full_name'), '<input name="name" maxlength="80" autocomplete="name">')}
+          ${field(t('username'), '<input name="username" value="admin" required autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false">')}
+          ${field(t('password'), '<input name="password" type="password" minlength="6" required autocomplete="new-password">')}
+          ${field(t('repeat_password'), '<input name="password2" type="password" minlength="6" required autocomplete="new-password">')}
+          <p class="form-error" hidden></p>
+          <button class="btn primary block" type="submit">${t('setup_go')}</button>
+        </form>
+      </div>
+    </main>`;
+  const form = $('#setup-form');
+  form.language.onchange = () => {
+    const keep = formData(form);
+    S.brand.language = form.language.value;
+    setLang(form.language.value);
+    renderSetup();
+    const f = $('#setup-form');
+    ['app_name', 'name', 'username'].forEach(k => { f[k].value = keep[k]; });
+  };
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const err = $('.form-error', form);
+    err.hidden = true;
+    const data = formData(form);
+    if (data.password !== data.password2) {
+      err.textContent = t('passwords_differ');
+      err.hidden = false;
+      return;
+    }
+    await busy($('button[type=submit]', form), async () => {
+      try {
+        await api('POST', '/api/setup', data);
+        const me = await api('GET', '/api/me');
+        S.me = me.user;
+        S.perms = me.perms;
+        applyBrand(me.branding);
+        S.view = 'settings';
+        S.tab = 'look';
+        history.replaceState(null, '', '#settings/look');
+        render();
+        toast(t('setup_done'), 'ok');
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.hidden = false;
+        if (ex.status === 403) setTimeout(() => location.reload(), 1500);
       }
     });
   });

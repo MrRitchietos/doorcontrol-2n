@@ -208,10 +208,8 @@ cd $OPT/app && exec runuser -u $SVC_USER -- $OPT/venv/bin/python -m doorcontrol 
 EOF
 chmod 755 /usr/local/bin/doorcontrol
 
-FIRST_PW=""
-if ! /usr/local/bin/doorcontrol has-users; then
-  FIRST_PW="$(/usr/local/bin/doorcontrol reset-admin | sed -n 's/^password: //p')"
-fi
+FIRST_RUN=""
+/usr/local/bin/doorcontrol has-users || FIRST_RUN=1
 
 say "Starting service"
 systemctl daemon-reload
@@ -232,10 +230,10 @@ for ip in $(hostname -I 2>/dev/null); do
   case "$ip" in *:*|172.17.*) continue ;; esac
   echo "    $SCHEME://$ip:$PORT"
 done
-if [ -n "$FIRST_PW" ]; then
+if [ -n "$FIRST_RUN" ]; then
   echo
-  echo "    First login:  admin / $FIRST_PW"
-  echo "    Change it under the person icon after logging in."
+  echo "    Open the address now and create the admin account."
+  echo "    This screen only shows until the first admin is made."
 fi
 echo
 echo "    Update:        run the same install line again"

@@ -13,7 +13,8 @@ On the 2N Access Commander VM (or any Debian/Ubuntu x86_64 machine), as root:
 curl -fsSL https://raw.githubusercontent.com/MrRitchietos/doorcontrol-2n/main/install.sh | bash
 ```
 
-At the end it prints the address and the first admin password. Open it on a phone and log in.
+At the end it prints the address. Open it and the first screen asks you to make the admin account
+(only on the very first start, it never shows again once there is a user).
 
 Run the same line again to update. Users, doors and settings stay.
 

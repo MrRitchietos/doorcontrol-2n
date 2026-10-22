@@ -345,3 +345,25 @@ def test_https_redirect_is_not_success(env, fake2n):
     r = c.post(f"/api/doors/{bid}/open", headers=H)
     assert r.status_code == 502
     assert "https" in r.get_json()["error"]
+
+
+def test_first_run_setup_only_once(tmp_path):
+    app = create_app(str(tmp_path / "fresh"))
+    c = app.test_client()
+    assert c.get("/api/branding").get_json()["needs_setup"] is True
+    assert c.post("/api/setup", json={"username": "boss", "password": "123"}, headers=H).status_code == 400
+    r = c.post("/api/setup", json={"username": "boss", "password": "secret1", "app_name": "Haven", "language": "nl"}, headers=H)
+    assert r.status_code == 200
+    me = c.get("/api/me").get_json()
+    assert me["perms"]["is_admin"] and me["branding"]["app_name"] == "Haven" and me["branding"]["needs_setup"] is False
+    # a second try, from anyone, is refused
+    other = app.test_client()
+    assert other.post("/api/setup", json={"username": "evil", "password": "secret1"}, headers=H).status_code == 403
+    assert not app.db.one("SELECT 1 FROM users WHERE username = 'evil'")
+
+
+def test_no_setup_when_users_exist(env):
+    app, _ = env
+    c = app.test_client()
+    assert c.get("/api/branding").get_json()["needs_setup"] is False
+    assert c.post("/api/setup", json={"username": "x", "password": "secret1"}, headers=H).status_code == 403

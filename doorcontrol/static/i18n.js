@@ -54,6 +54,10 @@ const LANG = {
     timezone: 'Time zone', trigger_hint: 'The name after /enu/trigger/ in the 2N Automation.', trigger_name: 'Trigger name',
     until: 'Until', upload_logo: 'Upload logo', username: 'Username',
     users_help: 'Who can log in. A rank decides what they can do.', users_lc: 'users',
+    setup_title: 'Welcome', setup_help: 'First start. Make the admin account for this client.',
+    setup_name_hint: 'You can change this later, with the logo and color.', repeat_password: 'Password again',
+    passwords_differ: 'The passwords are not the same.', setup_go: 'Create admin and start',
+    setup_done: 'Admin created. Now add the logo, intercoms and doors.',
     what_happens: 'What happens', when: 'When', which_doors: 'Which doors', you: 'you',
   },
   nl: {
@@ -111,6 +115,10 @@ const LANG = {
     timezone: 'Tijdzone', trigger_hint: 'De naam na /enu/trigger/ in de 2N Automation.', trigger_name: 'Naam trigger',
     until: 'Tot', upload_logo: 'Logo uploaden', username: 'Gebruikersnaam',
     users_help: 'Wie kan inloggen. De rang bepaalt wat ze mogen.', users_lc: 'gebruikers',
+    setup_title: 'Welkom', setup_help: 'Eerste start. Maak de admin account voor deze klant.',
+    setup_name_hint: 'Kan je later wijzigen, samen met logo en kleur.', repeat_password: 'Wachtwoord opnieuw',
+    passwords_differ: 'De wachtwoorden zijn niet hetzelfde.', setup_go: 'Admin maken en starten',
+    setup_done: 'Admin gemaakt. Voeg nu het logo, de intercoms en deuren toe.',
     what_happens: 'Wat gebeurt er', when: 'Wanneer', which_doors: 'Welke deuren', you: 'jij',
   },
 };
