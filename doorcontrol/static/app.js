@@ -1033,12 +1033,14 @@ async function paneLook() {
         </div>
         <button class="btn primary block" type="submit">${t('save')}</button>
       </form>
+      ${S.perms.is_admin ? `<section class="card" id="update-card"><h3>${t('updates')}</h3><p class="muted">...</p></section>` : ''}
       <section class="card">
         <h3>${t('backup')}</h3>
         <p class="muted">${t('backup_help')}</p>
         <a class="btn ghost" href="/api/admin/backup" download>${icon('download')} ${t('download_backup')}</a>
       </section>
     </div>`;
+  if (S.perms.is_admin) updateCard();
   const form = $('#look-form');
   $$('.swatch', pane).forEach(b => { b.onclick = () => { form.accent.value = b.dataset.c; }; });
   form.onsubmit = async e => {
@@ -1074,6 +1076,69 @@ async function paneLook() {
       } catch (ex) { toast(ex.message, 'err'); }
     };
   }
+}
+
+// ----- updates -----
+
+function updateResult(r) {
+  return ({ 'up to date': t('upd_up_to_date'), updated: t('upd_updated'), updating: t('upd_updating'),
+    'could not reach GitHub': t('upd_no_github'), 'update failed, previous version kept': t('upd_failed') })[r] || r || '';
+}
+
+async function updateCard() {
+  const box = $('#update-card');
+  if (!box) return;
+  let u;
+  try { u = await api('GET', '/api/admin/update'); } catch (e) { box.hidden = true; return; }
+  const last = u.last || {};
+  const when = last.checked ? new Date(last.checked).toLocaleString() : '';
+  box.innerHTML = `
+    <h3>${t('updates')}</h3>
+    <dl class="facts">
+      <dt>${t('upd_version')}</dt><dd>${esc(u.version)}${u.commit ? ` <span class="muted mono">${esc(u.commit)}</span>` : ''}</dd>
+      ${when ? `<dt>${t('upd_checked')}</dt><dd>${esc(when)}<br><span class="${last.result && last.result.includes('failed') ? 'bad' : 'muted'}">${esc(updateResult(last.result))}</span></dd>` : ''}
+    </dl>
+    ${u.managed ? `
+      <form class="stack" id="upd-form">${toggle('auto', t('upd_auto'), u.auto, t('upd_auto_hint'))}</form>
+      <button class="btn ghost" id="upd-now" ${u.requested ? 'disabled' : ''}>${u.requested ? t('upd_busy') : t('upd_now')}</button>`
+      : `<p class="muted small">${t('upd_manual')}</p>`}`;
+  const f = $('#upd-form');
+  if (f) {
+    f.auto.onchange = async () => {
+      try { await api('PUT', '/api/admin/update', { auto: f.auto.checked }); toast(t('saved'), 'ok'); }
+      catch (ex) { toast(ex.message, 'err'); }
+    };
+  }
+  const b = $('#upd-now');
+  if (b) {
+    b.onclick = async () => {
+      try {
+        await api('POST', '/api/admin/update');
+        b.disabled = true;
+        b.textContent = t('upd_busy');
+        waitForUpdate(u.commit);
+      } catch (ex) { toast(ex.message, 'err'); }
+    };
+  }
+}
+
+function waitForUpdate(oldCommit) {
+  // the server restarts when there is something new; reload once it is back
+  let tries = 0;
+  const tick = async () => {
+    tries++;
+    try {
+      const u = await api('GET', '/api/admin/update');
+      if (!u.requested && u.last && u.last.result !== 'updating') {
+        if (u.commit !== oldCommit) { toast(t('upd_updated'), 'ok'); setTimeout(() => location.reload(), 800); return; }
+        toast(updateResult(u.last.result), u.last.result.includes('failed') ? 'err' : 'ok');
+        updateCard();
+        return;
+      }
+    } catch (e) { /* restarting */ }
+    if (tries < 90) setTimeout(tick, 2000);
+  };
+  setTimeout(tick, 3000);
 }
 
 // ----- https -----

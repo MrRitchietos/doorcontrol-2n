@@ -24,6 +24,11 @@ At the end it prints the address. Open it and the first screen asks you to make 
 
 Run the same line again to update. Users, doors, settings and the certificate stay.
 
+**Auto update:** every server checks GitHub every hour and installs what is new. When a new
+version does not start, the previous one is put back by itself. In the app, Settings > Look >
+Updates shows the version and the last check, and has an on/off switch and an "update now" button.
+Install with `--no-auto-update` to switch it off from the start.
+
 The app runs on port **8080** (http) and **8443** (https, once there is a certificate), so Access
 Commander keeps 80 and 443. It brings its own Python in `/opt/doorcontrol`, data lives in
 `/var/lib/doorcontrol`. Nothing is installed with apt. When ufw is on, both ports are opened in ufw.
@@ -46,6 +51,7 @@ curl -fsSL https://raw.githubusercontent.com/MrRitchietos/doorcontrol-2n/main/in
 | `--self-signed` | self-signed certificate (Android will not install the app with it) |
 | `--http` | remove the certificate, plain http only |
 | `--version v1.0.0` | install a tagged version |
+| `--no-auto-update` | do not check GitHub every hour |
 | `--uninstall` | remove, keep the data |
 | `--purge` | remove everything, data too |
 

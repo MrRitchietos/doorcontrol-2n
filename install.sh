@@ -4,6 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/MrRitchietos/doorcontrol-2n/main/install.sh | sudo bash
 #
 # Run the same line again to update. Settings, users, doors and the certificate are kept.
+# The server also updates itself: every hour it checks GitHub and installs what is new.
+# When the new version does not start, the previous one is put back.
 #
 # Options (put them after "bash -s --"):
 #   --port 8080              http port (default 8080, 80/443 stay free for Access Commander)
@@ -15,6 +17,8 @@
 #   --self-signed            make a self-signed certificate (Android will not install the app with it)
 #   --http                   remove the certificate, plain http only
 #   --version v1.0.0         install a tagged version instead of the latest
+#   --no-auto-update         do not check GitHub for updates (default: check every hour)
+#   --auto-update            switch the hourly update check back on
 #   --uninstall              remove the app, keep the data in /var/lib/doorcontrol
 #   --purge                  remove the app and the data
 #
@@ -45,9 +49,11 @@ DOMAIN=""
 MODE=""
 VERSION="main"
 ACTION="install"
+AUTO_UPDATE=""
+QUIET=""
 
-say()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
-ok()   { printf '\033[1;32m ok\033[0m %s\n' "$*"; }
+say()  { [ -n "$QUIET" ] || printf '\033[1;34m==>\033[0m %s\n' "$*"; }
+ok()   { [ -n "$QUIET" ] || printf '\033[1;32m ok\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
@@ -61,6 +67,9 @@ while [ $# -gt 0 ]; do
     --self-signed) MODE="self"; shift ;;
     --http) MODE="http"; shift ;;
     --version) VERSION="${2:-}"; shift 2 ;;
+    --no-auto-update) AUTO_UPDATE=0; shift ;;
+    --auto-update) AUTO_UPDATE=1; shift ;;
+    --from-updater) QUIET=1; shift ;;
     --uninstall) ACTION="uninstall"; shift ;;
     --purge) ACTION="purge"; shift ;;
     *) die "unknown option: $1" ;;
@@ -72,8 +81,10 @@ command -v systemctl >/dev/null || die "systemd is needed"
 
 if [ "$ACTION" != "install" ]; then
   say "Removing Door Control"
-  systemctl disable --now doorcontrol 2>/dev/null || true
-  rm -f "$UNIT" /usr/local/bin/doorcontrol
+  systemctl disable --now doorcontrol doorcontrol-update.timer doorcontrol-update.path 2>/dev/null || true
+  rm -f "$UNIT" /usr/local/bin/doorcontrol /usr/local/sbin/doorcontrol-update \
+    /etc/systemd/system/doorcontrol-update.service /etc/systemd/system/doorcontrol-update.timer \
+    /etc/systemd/system/doorcontrol-update.path
   systemctl daemon-reload
   rm -rf "$OPT"
   if [ "$ACTION" = "purge" ]; then
@@ -95,7 +106,9 @@ if [ -f "$ENVF" ]; then
   . "$ENVF"
   [ -n "$PORT" ] || PORT="${DOORCONTROL_PORT:-8080}"
   [ -n "$HTTPS_PORT" ] || HTTPS_PORT="${DOORCONTROL_HTTPS_PORT:-8443}"
+  [ -n "$AUTO_UPDATE" ] || AUTO_UPDATE="${DOORCONTROL_AUTO_UPDATE:-1}"
 fi
+AUTO_UPDATE="${AUTO_UPDATE:-1}"
 PORT="${PORT:-8080}"
 HTTPS_PORT="${HTTPS_PORT:-8443}"
 for p in "$PORT" "$HTTPS_PORT"; do
@@ -142,32 +155,42 @@ if [ "$(cat "$OPT/python/.tag" 2>/dev/null)" != "$PY_TAG" ]; then
 fi
 
 say "Downloading Door Control ($VERSION)"
-if [ "$VERSION" = "main" ]; then
-  SRC="https://codeload.github.com/$REPO/tar.gz/refs/heads/main"
+COMMIT=""
+if [ -n "${DOORCONTROL_SRC:-}" ]; then
+  SRC="$DOORCONTROL_SRC"
+  COMMIT="local"
 else
-  SRC="https://codeload.github.com/$REPO/tar.gz/refs/tags/$VERSION"
+  # pin the exact commit, so the update check knows what is installed
+  COMMIT="$(curl -fsSL -m 20 -H 'Accept: application/vnd.github.sha' "https://api.github.com/repos/$REPO/commits/$VERSION" || true)"
+  case "$COMMIT" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) SRC="https://codeload.github.com/$REPO/tar.gz/$COMMIT" ;;
+    *) COMMIT=""
+       if [ "$VERSION" = "main" ]; then SRC="https://codeload.github.com/$REPO/tar.gz/refs/heads/main"
+       else SRC="https://codeload.github.com/$REPO/tar.gz/refs/tags/$VERSION"; fi ;;
+  esac
 fi
-SRC="${DOORCONTROL_SRC:-$SRC}"
 curl -fsSL --retry 3 -o "$TMP/app.tgz" "$SRC" || die "download failed: $SRC"
 mkdir -p "$TMP/app"
 tar -xzf "$TMP/app.tgz" -C "$TMP/app" --strip-components=1
 [ -f "$TMP/app/doorcontrol/app.py" ] || die "download looks wrong"
+echo "$COMMIT" > "$TMP/app/.commit"
 rm -rf "$OPT/app.new"
 mv "$TMP/app" "$OPT/app.new"
 
 say "Installing packages"
 [ -x "$OPT/venv/bin/python" ] || "$OPT/python/bin/python3" -m venv "$OPT/venv"
 "$OPT/venv/bin/pip" install --quiet --disable-pip-version-check -r "$OPT/app.new/requirements.txt"
-rm -rf "$OPT/app.old"
-[ -d "$OPT/app" ] && mv "$OPT/app" "$OPT/app.old"
+# the previous version stays as app.prev, so a broken update can be undone
+rm -rf "$OPT/app.prev"
+[ -d "$OPT/app" ] && mv "$OPT/app" "$OPT/app.prev"
 mv "$OPT/app.new" "$OPT/app"
-rm -rf "$OPT/app.old"
 ok "version $("$OPT/venv/bin/python" -c 'import sys; sys.path.insert(0, "/opt/doorcontrol/app"); import doorcontrol; print(doorcontrol.__version__)')"
 
 cat > "$ENVF" <<EOF
 DOORCONTROL_PORT=$PORT
 DOORCONTROL_HTTPS_PORT=$HTTPS_PORT
 DOORCONTROL_DATA=$DATA
+DOORCONTROL_AUTO_UPDATE=$AUTO_UPDATE
 EOF
 
 cat > "$UNIT" <<EOF
@@ -230,15 +253,125 @@ case "$MODE" in
     ;;
 esac
 
+cat > /usr/local/sbin/doorcontrol-update <<'UPD'
+#!/bin/bash
+# Checks GitHub for a newer Door Control and installs it. Run by doorcontrol-update.timer (hourly)
+# and by doorcontrol-update.path when "Update now" is pressed in the app.
+set -uo pipefail
+REPO="MrRitchietos/doorcontrol-2n"
+. /etc/doorcontrol.env
+DATA="${DOORCONTROL_DATA:-/var/lib/doorcontrol}"
+STATUS="$DATA/update.json"
+NOW=""
+[ "${1:-}" = "--now" ] && NOW=1
+if [ -f "$DATA/update-request" ]; then rm -f "$DATA/update-request"; NOW=1; fi
+if [ -z "$NOW" ] && { [ "${DOORCONTROL_AUTO_UPDATE:-1}" != 1 ] || [ -f "$DATA/auto-update-off" ]; }; then
+  exit 0
+fi
+
+status() {
+  printf '{"checked": "%s", "installed": "%s", "latest": "%s", "result": "%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" > "$STATUS.tmp"
+  chown doorcontrol: "$STATUS.tmp" 2>/dev/null
+  mv -f "$STATUS.tmp" "$STATUS"
+}
+
+installed="$(cat /opt/doorcontrol/app/.commit 2>/dev/null)"
+latest="$(curl -fsSL -m 20 -H 'Accept: application/vnd.github.sha' "https://api.github.com/repos/$REPO/commits/main" 2>/dev/null)"
+case "$latest" in
+  [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+  *) status "$installed" "" "could not reach GitHub"; exit 0 ;;
+esac
+if [ "$installed" = "$latest" ]; then
+  status "$installed" "$latest" "up to date"
+  exit 0
+fi
+status "$installed" "$latest" "updating"
+if curl -fsSL -m 60 "https://raw.githubusercontent.com/$REPO/$latest/install.sh" -o /tmp/doorcontrol-install.sh &&
+   bash /tmp/doorcontrol-install.sh --from-updater; then
+  status "$(cat /opt/doorcontrol/app/.commit 2>/dev/null)" "$latest" "updated"
+else
+  status "$(cat /opt/doorcontrol/app/.commit 2>/dev/null)" "$latest" "update failed, previous version kept"
+  rm -f /tmp/doorcontrol-install.sh
+  exit 1
+fi
+rm -f /tmp/doorcontrol-install.sh
+UPD
+chmod 755 /usr/local/sbin/doorcontrol-update
+
+cat > /etc/systemd/system/doorcontrol-update.service <<'UPD'
+[Unit]
+Description=Door Control update check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/doorcontrol-update
+UPD
+
+cat > /etc/systemd/system/doorcontrol-update.timer <<'UPD'
+[Unit]
+Description=Door Control update check every hour
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UPD
+
+cat > /etc/systemd/system/doorcontrol-update.path <<UPD
+[Unit]
+Description=Door Control update requested from the app
+
+[Path]
+PathExists=$DATA/update-request
+
+[Install]
+WantedBy=multi-user.target
+UPD
+
 FIRST_RUN=""
 /usr/local/bin/doorcontrol has-users || FIRST_RUN=1
+
+healthy() {
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    systemctl is-active --quiet doorcontrol &&
+      curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$PORT/api/branding" && return 0
+  done
+  return 1
+}
 
 say "Starting service"
 systemctl daemon-reload
 systemctl enable --quiet doorcontrol
 systemctl restart doorcontrol
-sleep 2
-systemctl is-active --quiet doorcontrol || { journalctl -u doorcontrol -n 30 --no-pager; die "service did not start"; }
+if ! healthy; then
+  journalctl -u doorcontrol -n 30 --no-pager
+  if [ -d "$OPT/app.prev" ]; then
+    rm -rf "$OPT/app.broken"
+    mv "$OPT/app" "$OPT/app.broken"
+    mv "$OPT/app.prev" "$OPT/app"
+    systemctl restart doorcontrol
+    healthy && die "new version did not start, the previous version is back"
+  fi
+  die "service did not start"
+fi
+systemctl enable --quiet doorcontrol-update.path
+systemctl restart doorcontrol-update.path
+if [ "$AUTO_UPDATE" = 1 ]; then
+  systemctl enable --quiet doorcontrol-update.timer
+  systemctl start doorcontrol-update.timer
+  ok "auto update on (checks GitHub every hour)"
+else
+  systemctl disable --quiet --now doorcontrol-update.timer 2>/dev/null || true
+  ok "auto update off"
+fi
 
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
   ufw allow "$PORT/tcp" >/dev/null
@@ -246,6 +379,7 @@ if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active
   ok "firewall (ufw) opened for ports $PORT and $HTTPS_PORT"
 fi
 
+[ -z "$QUIET" ] || exit 0
 echo
 ok "Door Control is running"
 for ip in $(hostname -I 2>/dev/null); do

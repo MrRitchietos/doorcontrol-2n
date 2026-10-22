@@ -367,3 +367,33 @@ def test_no_setup_when_users_exist(env):
     c = app.test_client()
     assert c.get("/api/branding").get_json()["needs_setup"] is False
     assert c.post("/api/setup", json={"username": "x", "password": "secret1"}, headers=H).status_code == 403
+
+
+def test_update_endpoints(env, tmp_path):
+    app, _ = env
+    c = app.test_client()
+    login(c)
+    u = c.get("/api/admin/update").get_json()
+    assert u["auto"] is True and u["version"]
+    # dev checkout has no .commit file from the installer, so "update now" is refused
+    if not u["managed"]:
+        assert c.post("/api/admin/update", headers=H).status_code == 400
+    assert c.put("/api/admin/update", json={"auto": False}, headers=H).get_json()["auto"] is False
+    assert c.put("/api/admin/update", json={"auto": True}, headers=H).get_json()["auto"] is True
+    import os
+    with open(os.path.join(app.data_dir, "update.json"), "w") as f:
+        f.write('{"checked": "2026-10-22T10:00:00Z", "installed": "a", "latest": "a", "result": "up to date"}')
+    assert c.get("/api/admin/update").get_json()["last"]["result"] == "up to date"
+
+
+def test_update_only_for_admin(env):
+    app, _ = env
+    c = app.test_client()
+    login(c)
+    roles = {r["name"]: r["id"] for r in c.get("/api/admin/roles").get_json()["roles"]}
+    mid = c.post("/api/admin/roles", json={"name": "Office", "rank": 5, "manage_settings": True, "all_doors": True, "days": "1234567"}, headers=H).get_json()["id"]
+    c.post("/api/admin/users", json={"username": "office", "password": "secret1", "role_id": mid}, headers=H)
+    o = app.test_client()
+    login(o, "office", "secret1")
+    assert o.get("/api/admin/update").status_code == 403
+    assert o.post("/api/admin/update", headers=H).status_code == 403

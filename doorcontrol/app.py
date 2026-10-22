@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import secrets
@@ -600,6 +601,56 @@ def create_app(data_dir=None, trust_proxy=None, secure_cookies=None, https_port=
             tls_control.reload_tls()
         write_log("https certificate removed")
         return jsonify(https_state())
+
+    # ---------- admin: updates ----------
+
+    def update_state():
+        try:
+            with open(os.path.join(os.path.dirname(HERE), ".commit")) as f:
+                commit = f.read().strip()
+        except OSError:
+            commit = ""
+        try:
+            with open(os.path.join(data_dir, "update.json")) as f:
+                last = json.load(f)
+        except (OSError, ValueError):
+            last = {}
+        return {
+            "version": __version__,
+            "commit": commit[:7] if commit not in ("", "local") else commit,
+            # only a real install (with the updater from install.sh) can update itself
+            "managed": bool(commit) and commit != "local",
+            "auto": not os.path.exists(os.path.join(data_dir, "auto-update-off")),
+            "requested": os.path.exists(os.path.join(data_dir, "update-request")),
+            "last": last,
+        }
+
+    @app.get("/api/admin/update")
+    @need("is_admin")
+    def get_update():
+        return jsonify(update_state())
+
+    @app.put("/api/admin/update")
+    @need("is_admin")
+    def put_update():
+        on = bool((request.get_json(silent=True) or {}).get("auto"))
+        flag_file = os.path.join(data_dir, "auto-update-off")
+        if on and os.path.exists(flag_file):
+            os.remove(flag_file)
+        elif not on:
+            open(flag_file, "w").close()
+        write_log("auto update " + ("on" if on else "off"))
+        return jsonify(update_state())
+
+    @app.post("/api/admin/update")
+    @need("is_admin")
+    def update_now():
+        if not update_state()["managed"]:
+            raise Fail("this server was not installed with the installer, update it by hand")
+        # a root service watches for this file and runs the update (the app itself has no rights for that)
+        open(os.path.join(data_dir, "update-request"), "w").close()
+        write_log("update requested")
+        return jsonify(update_state())
 
     @app.get("/api/admin/backup")
     @need("manage_settings")
