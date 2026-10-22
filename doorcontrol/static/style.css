@@ -215,6 +215,16 @@ input[type=color] { width: 48px; height: 40px; border: 1px solid var(--line); bo
 
 .notice { display: flex; gap: 10px; align-items: center; padding: 12px 14px; border-radius: 14px; background: var(--card); box-shadow: var(--shadow); margin: 0 0 14px; font-size: 14px; }
 .notice.warn { color: var(--warn); }
+.notice.good { color: var(--good); }
+.notice.bad { color: var(--bad); }
+.notice a { word-break: break-all; }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 12px 0; font-size: 14px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; word-break: break-word; }
+.warn-text.small { display: flex; gap: 6px; align-items: flex-start; }
+.warn-text .ic { width: 16px; height: 16px; margin-top: 2px; }
+.howto { margin: 8px 0 0; padding-left: 20px; font-size: 14px; color: var(--muted); display: flex; flex-direction: column; gap: 6px; }
+input[type=file] { width: 100%; font-size: 14px; }
 .empty { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; padding: 48px 16px; color: var(--muted); }
 .empty p { margin: 0; }
 .install-card { margin-top: 24px; display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border-radius: 16px; background: var(--card); box-shadow: var(--shadow); color: var(--muted); font-size: 14px; }

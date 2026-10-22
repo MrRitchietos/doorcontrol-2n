@@ -14,6 +14,10 @@ const S = {
 const $ = (sel, root) => (root || document).querySelector(sel);
 const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 
+function count(n, one, many) {
+  return `${n} ${t(n === 1 ? one : many)}`;
+}
+
 function esc(v) {
   return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -527,7 +531,7 @@ function settingsTabs() {
   if (p.manage_doors) tabs.push(['doors', 'door', t('tab_doors')], ['intercoms', 'chip', t('tab_intercoms')]);
   if (p.manage_users) tabs.push(['users', 'users', t('tab_users')]);
   if (p.is_admin) tabs.push(['ranks', 'shield', t('tab_ranks')]);
-  if (p.manage_settings) tabs.push(['look', 'palette', t('tab_look')]);
+  if (p.manage_settings) tabs.push(['look', 'palette', t('tab_look')], ['https', 'lock', 'HTTPS']);
   if (p.view_log) tabs.push(['log', 'list', t('tab_log')]);
   return tabs;
 }
@@ -546,7 +550,7 @@ function renderSettings() {
     <main class="settings" id="pane"><div class="loading-pane"><span class="spinner"></span></div></main>`;
   const on = $('.tab.on');
   if (on) on.scrollIntoView({ inline: 'center', block: 'nearest' });
-  ({ doors: paneDoors, intercoms: paneIntercoms, users: paneUsers, ranks: paneRanks, look: paneLook, log: paneLog })[S.tab]()
+  ({ doors: paneDoors, intercoms: paneIntercoms, users: paneUsers, ranks: paneRanks, look: paneLook, https: paneHttps, log: paneLog })[S.tab]()
     .catch(e => { if (e.status !== 401) $('#pane').innerHTML = `<div class="empty"><p>${esc(e.message)}</p></div>`; });
 }
 
@@ -723,7 +727,7 @@ async function paneIntercoms() {
           <button class="item-main" data-edit>
             <strong>${esc(d.name)}</strong>
             <span class="muted mono">${esc(d.scheme)}://${esc(d.host)}${d.username ? ' · ' + esc(d.username) : ''}</span>
-            <span class="muted small" data-status>${d.buttons} ${t('doors_lc')}</span>
+            <span class="muted small" data-status>${count(d.buttons, 'door_lc', 'doors_lc')}</span>
           </button>
           <button class="btn ghost small" data-test>${t('test')}</button>
         </li>`).join('')}
@@ -894,7 +898,7 @@ async function paneRanks() {
     if (r.manage_doors) bits.push(t('p_doors'));
     if (r.manage_settings) bits.push(t('p_settings'));
     if (r.view_log) bits.push(t('p_log'));
-    bits.push(r.all_doors ? t('all_doors') : `${r.buttons.length} ${t('doors_lc')}`);
+    bits.push(r.all_doors ? t('all_doors') : count(r.buttons.length, 'door_lc', 'doors_lc'));
     if (r.days !== '1234567') bits.push(r.days.split('').map(d => t('day' + d)).join(' '));
     if (r.time_from) bits.push(`${r.time_from}-${r.time_to}`);
     return bits.join(' · ');
@@ -908,7 +912,7 @@ async function paneRanks() {
             <strong>${esc(r.name)}</strong>
             <span class="muted">${esc(summary(r))}</span>
           </button>
-          <span class="badge">${r.users} ${t('users_lc')}</span>
+          <span class="badge">${count(r.users, 'user_lc', 'users_lc')}</span>
         </li>`).join('')}
     </ul>`;
   $$('.item', pane).forEach(li => {
@@ -1067,6 +1071,99 @@ async function paneLook() {
         const r = await api('DELETE', '/api/admin/logo');
         applyBrand(r.branding);
         renderSettings();
+      } catch (ex) { toast(ex.message, 'err'); }
+    };
+  }
+}
+
+// ----- https -----
+
+async function paneHttps() {
+  const h = await api('GET', '/api/admin/https');
+  const c = h.cert;
+  const pane = $('#pane');
+  let status;
+  if (!c) status = `<div class="notice">${icon('alert')}<span>${t('https_none')}</span></div>`;
+  else if (!h.running) status = `<div class="notice bad">${icon('alert')}<span>${t('https_not_running')}${h.error ? ': ' + esc(h.error) : ''}</span></div>`;
+  else status = `<div class="notice good">${icon('check')}<span>${t('https_running')} <a href="${esc(h.url)}">${esc(h.url || ('port ' + h.port))}</a></span></div>`;
+  const warn = [];
+  if (c) {
+    if (c.self_signed) warn.push(t('cert_self_signed'));
+    if (!c.chain_ok) warn.push(t('cert_no_chain'));
+    if (c.domain_ok === false) warn.push(t('cert_wrong_domain'));
+    if (c.days_left < 30) warn.push(t('cert_expires_soon').replace('{n}', c.days_left));
+  }
+  pane.innerHTML = paneHead('HTTPS', t('https_help')) + `
+    <div class="cards">
+      ${status}
+      ${c ? `<section class="card">
+        <h3>${t('cert_current')}</h3>
+        <dl class="facts">
+          <dt>${t('cert_for')}</dt><dd>${c.names.map(esc).join(', ')}</dd>
+          <dt>${t('cert_by')}</dt><dd>${esc(c.issuer)}</dd>
+          <dt>${t('cert_until')}</dt><dd>${esc(c.not_after)} <span class="muted">(${c.days_left} ${t('days')})</span></dd>
+        </dl>
+        ${warn.map(w => `<p class="warn-text small">${icon('alert')} ${esc(w)}</p>`).join('')}
+        <button class="btn ghost danger-text" id="cert-del">${icon('trash')} ${t('cert_remove')}</button>
+      </section>` : ''}
+      <form class="card stack" id="cert-form">
+        <h3>${c ? t('cert_replace') : t('cert_import')}</h3>
+        ${field(t('domain'), `<input name="domain" value="${esc(h.domain)}" placeholder="door.company.be" autocapitalize="none" autocorrect="off" spellcheck="false" inputmode="url">`, t('domain_hint'))}
+        ${field(t('cert_files'), '<input type="file" name="files" multiple accept=".pfx,.p12,.crt,.cer,.pem,.key">', t('cert_files_hint'))}
+        ${field(t('cert_password'), '<input type="password" name="password" autocomplete="off">', t('cert_password_hint'))}
+        <button class="btn primary block" type="submit">${t('cert_upload')}</button>
+      </form>
+      ${c ? `<form class="card stack" id="https-form">
+        <h3>${t('https_use')}</h3>
+        ${field(t('domain'), `<input name="domain" value="${esc(h.domain)}" autocapitalize="none" autocorrect="off" spellcheck="false" inputmode="url">`)}
+        ${toggle('redirect', t('https_redirect'), h.redirect, t('https_redirect_hint'))}
+        <button class="btn primary block" type="submit">${t('save')}</button>
+      </form>` : ''}
+      <section class="card">
+        <h3>${t('https_how')}</h3>
+        <ol class="howto"><li>${t('https_step1')}</li><li>${t('https_step2')}</li><li>${t('https_step3')}</li><li>${t('https_step4')}</li></ol>
+      </section>
+    </div>`;
+
+  $('#cert-form').onsubmit = async e => {
+    e.preventDefault();
+    const f = e.target;
+    if (!f.files.files.length) { toast(t('cert_pick'), 'err'); return; }
+    const fd = new FormData();
+    Array.from(f.files.files).forEach(x => fd.append('files', x));
+    fd.append('password', f.password.value);
+    fd.append('domain', f.domain.value);
+    await busy($('button[type=submit]', f), async () => {
+      try {
+        await api('POST', '/api/admin/https', fd);
+        toast(t('saved'), 'ok');
+        paneHttps();
+      } catch (ex) { toast(ex.message, 'err'); }
+    });
+  };
+  const hf = $('#https-form');
+  if (hf) {
+    hf.onsubmit = async e => {
+      e.preventDefault();
+      await busy($('button[type=submit]', hf), async () => {
+        try {
+          const r = await api('PUT', '/api/admin/https', formData(hf));
+          toast(t('saved'), 'ok');
+          if (r.redirect && !r.secure_now && r.url) location.href = r.url + '/#settings/https';
+          else paneHttps();
+        } catch (ex) { toast(ex.message, 'err'); }
+      });
+    };
+  }
+  const del = $('#cert-del');
+  if (del) {
+    del.onclick = async () => {
+      if (!await confirmSheet(t('cert_remove'), t('cert_remove_q'), t('delete'), true)) return;
+      try {
+        await api('DELETE', '/api/admin/https');
+        toast(t('deleted'), 'ok');
+        if (location.protocol === 'https:') location.href = 'http://' + location.hostname + ':8080/#settings/https';
+        else paneHttps();
       } catch (ex) { toast(ex.message, 'err'); }
     };
   }

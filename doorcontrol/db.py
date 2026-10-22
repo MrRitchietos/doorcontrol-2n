@@ -94,6 +94,8 @@ DEFAULT_SETTINGS = {
     "session_days": "30",
     "log_days": "180",
     "logo_version": "0",
+    "https_domain": "",
+    "https_redirect": "0",
 }
 
 

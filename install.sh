@@ -3,16 +3,22 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/MrRitchietos/doorcontrol-2n/main/install.sh | sudo bash
 #
-# Run the same line again to update. Settings, users and doors are kept.
+# Run the same line again to update. Settings, users, doors and the certificate are kept.
 #
 # Options (put them after "bash -s --"):
-#   --port 8080              port for the web app (default 8080, 80/443 stay free for Access Commander)
-#   --cert FILE --key FILE   serve https with this certificate
-#   --self-signed            make a self-signed certificate and serve https
-#   --http                   go back to plain http
+#   --port 8080              http port (default 8080, 80/443 stay free for Access Commander)
+#   --https-port 8443        https port, used once there is a certificate (default 8443)
+#   --cert FILE              certificate for https: a .pfx/.p12, or a .crt together with --key
+#   --key FILE               private key that goes with --cert
+#   --password PW            password of the .pfx or the key
+#   --domain NAME            name the phones use, for example door.company.be
+#   --self-signed            make a self-signed certificate (Android will not install the app with it)
+#   --http                   remove the certificate, plain http only
 #   --version v1.0.0         install a tagged version instead of the latest
 #   --uninstall              remove the app, keep the data in /var/lib/doorcontrol
 #   --purge                  remove the app and the data
+#
+# The certificate can also be imported later in the app: Settings > HTTPS.
 #
 # Everything lives in /opt/doorcontrol and /var/lib/doorcontrol. It brings its own Python,
 # so nothing is installed or changed with apt and Access Commander is left alone.
@@ -31,8 +37,11 @@ UNIT=/etc/systemd/system/doorcontrol.service
 SVC_USER=doorcontrol
 
 PORT=""
+HTTPS_PORT=""
 CERT=""
 KEY=""
+CERT_PW=""
+DOMAIN=""
 MODE=""
 VERSION="main"
 ACTION="install"
@@ -44,8 +53,11 @@ die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --port) PORT="${2:-}"; shift 2 ;;
+    --https-port) HTTPS_PORT="${2:-}"; shift 2 ;;
     --cert) CERT="${2:-}"; MODE="cert"; shift 2 ;;
     --key) KEY="${2:-}"; shift 2 ;;
+    --password) CERT_PW="${2:-}"; shift 2 ;;
+    --domain) DOMAIN="${2:-}"; shift 2 ;;
     --self-signed) MODE="self"; shift ;;
     --http) MODE="http"; shift ;;
     --version) VERSION="${2:-}"; shift 2 ;;
@@ -82,26 +94,31 @@ if [ -f "$ENVF" ]; then
   # shellcheck disable=SC1090
   . "$ENVF"
   [ -n "$PORT" ] || PORT="${DOORCONTROL_PORT:-8080}"
-  if [ -z "$MODE" ]; then
-    CERT="${DOORCONTROL_CERT:-}"
-    KEY="${DOORCONTROL_KEY:-}"
-  fi
+  [ -n "$HTTPS_PORT" ] || HTTPS_PORT="${DOORCONTROL_HTTPS_PORT:-8443}"
 fi
 PORT="${PORT:-8080}"
-case "$PORT" in ''|*[!0-9]*) die "port must be a number" ;; esac
+HTTPS_PORT="${HTTPS_PORT:-8443}"
+for p in "$PORT" "$HTTPS_PORT"; do
+  case "$p" in ''|*[!0-9]*) die "port must be a number: $p" ;; esac
+done
+[ "$PORT" != "$HTTPS_PORT" ] || die "http and https need different ports"
 
 if [ "$MODE" = "cert" ]; then
   [ -f "$CERT" ] || die "certificate not found: $CERT"
-  [ -f "$KEY" ] || die "key not found: $KEY"
+  [ -z "$KEY" ] || [ -f "$KEY" ] || die "key not found: $KEY"
 fi
-if [ "$MODE" = "http" ]; then CERT=""; KEY=""; fi
 
-# is the port free (or already ours)?
-if command -v ss >/dev/null && ss -ltnH "sport = :$PORT" 2>/dev/null | grep -q .; then
-  if ! { systemctl is-active --quiet doorcontrol && grep -q "^DOORCONTROL_PORT=$PORT\$" "$ENVF" 2>/dev/null; }; then
-    die "port $PORT is already used by something else, pick another one with --port"
+# are the ports free (or already ours)?
+port_busy() {
+  command -v ss >/dev/null && ss -ltnH "sport = :$1" 2>/dev/null | grep -q .
+}
+OURS=""
+systemctl is-active --quiet doorcontrol 2>/dev/null && OURS=1
+for p in "$PORT" "$HTTPS_PORT"; do
+  if port_busy "$p" && [ -z "$OURS" ]; then
+    die "port $p is already used by something else, pick another one with --port / --https-port"
   fi
-fi
+done
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -147,33 +164,11 @@ mv "$OPT/app.new" "$OPT/app"
 rm -rf "$OPT/app.old"
 ok "version $("$OPT/venv/bin/python" -c 'import sys; sys.path.insert(0, "/opt/doorcontrol/app"); import doorcontrol; print(doorcontrol.__version__)')"
 
-if [ "$MODE" = "self" ]; then
-  command -v openssl >/dev/null || die "openssl is missing, cannot make a certificate"
-  say "Making a self-signed certificate"
-  IPS="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9.]+$' | sed 's/^/IP:/' | paste -sd, -)"
-  SAN="DNS:$(hostname),DNS:localhost${IPS:+,$IPS}"
-  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=$(hostname)" \
-    -addext "subjectAltName=$SAN" -keyout "$DATA/tls.key" -out "$DATA/tls.crt" 2>/dev/null
-  chown "$SVC_USER:$SVC_USER" "$DATA/tls.key" "$DATA/tls.crt"
-  chmod 600 "$DATA/tls.key"
-  CERT="$DATA/tls.crt"
-  KEY="$DATA/tls.key"
-fi
-
 cat > "$ENVF" <<EOF
 DOORCONTROL_PORT=$PORT
-DOORCONTROL_CERT=$CERT
-DOORCONTROL_KEY=$KEY
+DOORCONTROL_HTTPS_PORT=$HTTPS_PORT
 DOORCONTROL_DATA=$DATA
 EOF
-
-if [ -n "$CERT" ] && [ "$MODE" = "cert" ]; then
-  # the service user must be able to read them
-  install -o "$SVC_USER" -g "$SVC_USER" -m 600 "$CERT" "$DATA/tls.crt"
-  install -o "$SVC_USER" -g "$SVC_USER" -m 600 "$KEY" "$DATA/tls.key"
-  sed -i "s#^DOORCONTROL_CERT=.*#DOORCONTROL_CERT=$DATA/tls.crt#; s#^DOORCONTROL_KEY=.*#DOORCONTROL_KEY=$DATA/tls.key#" "$ENVF"
-  CERT="$DATA/tls.crt"
-fi
 
 cat > "$UNIT" <<EOF
 [Unit]
@@ -202,11 +197,38 @@ EOF
 
 cat > /usr/local/bin/doorcontrol <<EOF
 #!/bin/sh
-# doorcontrol reset-admin | restore FILE | version
+# doorcontrol reset-admin | import-cert FILE | https-off | restore FILE | version
 set -a; . $ENVF; set +a
 cd $OPT/app && exec runuser -u $SVC_USER -- $OPT/venv/bin/python -m doorcontrol "\$@"
 EOF
 chmod 755 /usr/local/bin/doorcontrol
+
+case "$MODE" in
+  cert)
+    say "Importing certificate"
+    # the service user reads the files from a copy, so they can sit anywhere (also in /root)
+    install -o "$SVC_USER" -m 600 "$CERT" "$TMP/cert.in"
+    KEYARG=""
+    if [ -n "$KEY" ]; then install -o "$SVC_USER" -m 600 "$KEY" "$TMP/key.in"; KEYARG="--key $TMP/key.in"; fi
+    chmod 711 "$TMP"
+    # shellcheck disable=SC2086
+    /usr/local/bin/doorcontrol import-cert "$TMP/cert.in" $KEYARG --password "$CERT_PW" --domain "$DOMAIN" | head -1
+    ;;
+  self)
+    command -v openssl >/dev/null || die "openssl is missing, cannot make a certificate"
+    say "Making a self-signed certificate"
+    IPS="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9.]+$' | sed 's/^/IP:/' | paste -sd, -)"
+    SAN="DNS:$(hostname),DNS:localhost${IPS:+,$IPS}"
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=$(hostname)" \
+      -addext "subjectAltName=$SAN" -keyout "$DATA/tls.key" -out "$DATA/tls.crt" 2>/dev/null
+    chown "$SVC_USER:$SVC_USER" "$DATA/tls.key" "$DATA/tls.crt"
+    chmod 600 "$DATA/tls.key"
+    ;;
+  http)
+    /usr/local/bin/doorcontrol https-off >/dev/null
+    ok "certificate removed"
+    ;;
+esac
 
 FIRST_RUN=""
 /usr/local/bin/doorcontrol has-users || FIRST_RUN=1
@@ -219,17 +241,22 @@ sleep 2
 systemctl is-active --quiet doorcontrol || { journalctl -u doorcontrol -n 30 --no-pager; die "service did not start"; }
 
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-  ufw allow "$PORT/tcp" >/dev/null && ok "firewall (ufw) opened for port $PORT"
+  ufw allow "$PORT/tcp" >/dev/null
+  ufw allow "$HTTPS_PORT/tcp" >/dev/null
+  ok "firewall (ufw) opened for ports $PORT and $HTTPS_PORT"
 fi
 
-SCHEME=http
-[ -n "$CERT" ] && SCHEME=https
 echo
 ok "Door Control is running"
 for ip in $(hostname -I 2>/dev/null); do
   case "$ip" in *:*|172.17.*) continue ;; esac
-  echo "    $SCHEME://$ip:$PORT"
+  echo "    http://$ip:$PORT"
 done
+if [ -f "$DATA/tls.crt" ]; then
+  echo "    https on port $HTTPS_PORT${DOMAIN:+: https://$DOMAIN:$HTTPS_PORT}"
+else
+  echo "    https: import a certificate in Settings > HTTPS (needed for a real Android app)"
+fi
 if [ -n "$FIRST_RUN" ]; then
   echo
   echo "    Open the address now and create the admin account."

@@ -10,11 +10,12 @@ from datetime import datetime, timedelta
 from functools import wraps
 from zoneinfo import ZoneInfo, available_timezones
 
-from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory, session
+from flask import Flask, abort, g, jsonify, redirect, request, send_file, send_from_directory, session
+from flask.sessions import SecureCookieSessionInterface
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import __version__, branding, intercom
+from . import __version__, branding, intercom, tls
 from .db import Database
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -70,7 +71,14 @@ class LoginGuard:
             self.misses.pop(key, None)
 
 
-def create_app(data_dir=None, trust_proxy=None, secure_cookies=None):
+class SessionByScheme(SecureCookieSessionInterface):
+    """Cookie is marked Secure when the page came over https, so http and https can run side by side."""
+
+    def get_cookie_secure(self, app):
+        return app.config["SESSION_COOKIE_SECURE"] or request.is_secure
+
+
+def create_app(data_dir=None, trust_proxy=None, secure_cookies=None, https_port=None, tls_control=None):
     data_dir = data_dir or os.environ.get("DOORCONTROL_DATA") or os.path.join(os.getcwd(), "data")
     os.makedirs(data_dir, exist_ok=True)
     if trust_proxy is None:
@@ -98,6 +106,8 @@ def create_app(data_dir=None, trust_proxy=None, secure_cookies=None):
         MAX_CONTENT_LENGTH=6 * 1024 * 1024,
         JSON_SORT_KEYS=False,
     )
+
+    app.session_interface = SessionByScheme()
 
     db = Database(os.path.join(data_dir, "doorcontrol.db"))
     guard = LoginGuard()
@@ -190,6 +200,25 @@ def create_app(data_dir=None, trust_proxy=None, secure_cookies=None):
                 return fn(*a, **kw)
             return inner
         return deco
+
+    def https_live():
+        return bool(tls_control and tls_control.https_running())
+
+    def https_url():
+        s = settings()
+        host = s.get("https_domain") or ""
+        if not host or not https_port:
+            return ""
+        return f"https://{host}" + ("" if https_port == 443 else f":{https_port}")
+
+    @app.before_request
+    def to_https():
+        # only when https really runs and a domain is set, and never for localhost, so you can't lock yourself out
+        if request.is_secure or request.host.split(":")[0] in ("localhost", "127.0.0.1"):
+            return None
+        if settings().get("https_redirect") == "1" and https_live() and https_url():
+            return redirect(https_url() + request.full_path.rstrip("?"), code=302)
+        return None
 
     @app.before_request
     def before():
@@ -493,6 +522,84 @@ def create_app(data_dir=None, trust_proxy=None, secure_cookies=None):
         s = settings()
         branding.build_icons(data_dir, s["accent"])
         db.set_setting("logo_version", int(s.get("logo_version") or 0) + 1)
+
+    # ---------- admin: https certificate ----------
+
+    def https_state():
+        s = settings()
+        domain = s.get("https_domain", "")
+        return {
+            "domain": domain,
+            "redirect": s.get("https_redirect") == "1",
+            "port": https_port,
+            "running": https_live(),
+            "error": tls_control.https_error if tls_control else "",
+            "url": https_url(),
+            "cert": tls.current(data_dir, domain),
+            "secure_now": request.is_secure,
+        }
+
+    @app.get("/api/admin/https")
+    @need("manage_settings")
+    def get_https():
+        return jsonify(https_state())
+
+    def check_domain(d):
+        d = d.strip().lower().rstrip(".")
+        if d and not re.match(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$", d):
+            raise Fail("domain looks wrong, use something like door.company.be")
+        return d
+
+    @app.post("/api/admin/https")
+    @need("manage_settings")
+    def upload_cert():
+        files = [f.read() for f in request.files.getlist("files")]
+        if not files:
+            raise Fail("pick the certificate file(s)")
+        domain = check_domain(request.form.get("domain", ""))
+        try:
+            key, chain = tls.parse(files, request.form.get("password", ""))
+        except tls.CertError as e:
+            raise Fail(str(e))
+        chain = tls.complete_chain(chain)
+        i = tls.info(chain[0], len(chain), domain)
+        if i["days_left"] < 0:
+            raise Fail(f"this certificate expired on {i['not_after']}")
+        if not domain:
+            domain = next((n for n in i["names"] if not n.startswith("*")), "")
+        tls.save(data_dir, key, chain)
+        db.set_setting("https_domain", domain)
+        if tls_control:
+            tls_control.reload_tls()
+        write_log("https certificate imported", i["subject"], detail=f"valid until {i['not_after']}")
+        return jsonify(https_state())
+
+    @app.put("/api/admin/https")
+    @need("manage_settings")
+    def put_https():
+        data = request.get_json(silent=True) or {}
+        domain = check_domain(str(data.get("domain") or ""))
+        want_redirect = bool(data.get("redirect"))
+        if want_redirect:
+            cert = tls.current(data_dir, domain)
+            if not (cert and domain and https_live()):
+                raise Fail("https must run with a domain before http can be sent to it")
+            if not cert["domain_ok"]:
+                raise Fail("the certificate is not made for this domain")
+        db.set_setting("https_domain", domain)
+        db.set_setting("https_redirect", "1" if want_redirect else "0")
+        write_log("https settings changed", domain, detail="redirect on" if want_redirect else "redirect off")
+        return jsonify(https_state())
+
+    @app.delete("/api/admin/https")
+    @need("manage_settings")
+    def delete_cert():
+        tls.remove(data_dir)
+        db.set_setting("https_redirect", "0")
+        if tls_control:
+            tls_control.reload_tls()
+        write_log("https certificate removed")
+        return jsonify(https_state())
 
     @app.get("/api/admin/backup")
     @need("manage_settings")
@@ -945,6 +1052,26 @@ def make_admin(data_dir, username="admin", password=None):
         db.run("INSERT INTO users(username, name, password_hash, role_id) VALUES (?,?,?,?)",
                (username, "Administrator", generate_password_hash(password), role["id"]))
     return password
+
+
+def import_cert(data_dir, cert_file, key_file="", password="", domain=""):
+    files = []
+    for p in (cert_file, key_file):
+        if p:
+            with open(p, "rb") as f:
+                files.append(f.read())
+    key, chain = tls.parse(files, password)
+    chain = tls.complete_chain(chain)
+    i = tls.info(chain[0], len(chain), domain)
+    tls.save(data_dir, key, chain)
+    db = Database(os.path.join(data_dir, "doorcontrol.db"))
+    db.set_setting("https_domain", domain or next((n for n in i["names"] if not n.startswith("*")), ""))
+    return f"{i['subject']}, valid until {i['not_after']}"
+
+
+def https_off(data_dir):
+    tls.remove(data_dir)
+    Database(os.path.join(data_dir, "doorcontrol.db")).set_setting("https_redirect", "0")
 
 
 def has_users(data_dir):
