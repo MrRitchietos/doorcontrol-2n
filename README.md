@@ -91,8 +91,7 @@ journalctl -u doorcontrol -f     # logs
 ```
 python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m doorcontrol --data data reset-admin --password admin123
-.venv/bin/python -m doorcontrol --data data serve --port 8080
+.venv/bin/python -m doorcontrol --data data serve --port 8080   (first start asks for the admin account)
 .venv/bin/python -m pytest
 ```
 
